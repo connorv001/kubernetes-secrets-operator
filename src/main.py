@@ -98,8 +98,7 @@ def phase_secret_sync(spec, name, namespace, logger, uid, **kwargs):
             try:
                 existing_secret = api_instance.read_namespaced_secret(name=secret_name, namespace=secret_namespace)
                 if existing_secret.type != secret_type or existing_secret.data != processed_secrets:
-                    api_instance.delete_namespaced_secret(name=secret_name, namespace=secret_namespace)
-                    create_secret(api_instance, secret_name, secret_namespace, secret_type, processed_secrets, logger)
+                    update_secret(api_instance, secret_name, secret_namespace, secret_type, processed_secrets, existing_secret, logger)
                     secret_changed = True
             except ApiException as e:
                 if e.status == 404:
@@ -209,3 +208,22 @@ def create_secret(api_instance, secret_name, secret_namespace, secret_type, secr
             logger.info(f"Created secret {secret_name} in namespace {secret_namespace}")
     except ApiException as e:
         logger.error(f"Failed to create secret {secret_name} in namespace {secret_namespace}: {e}")
+
+def update_secret(api_instance, secret_name, secret_namespace, secret_type, secret_data, existing_secret, logger):
+    try:
+        response = api_instance.replace_namespaced_secret(
+            name=secret_name,
+            namespace=secret_namespace,
+            body=kubernetes.client.V1Secret(
+                metadata=kubernetes.client.V1ObjectMeta(
+                    name=secret_name,
+                    resource_version=existing_secret.metadata.resource_version
+                ),
+                type=secret_type,
+                data=secret_data
+            )
+        )
+        if response:
+            logger.info(f"Updated secret {secret_name} in namespace {secret_namespace}")
+    except ApiException as e:
+        logger.error(f"Failed to update secret {secret_name} in namespace {secret_namespace}: {e}")
