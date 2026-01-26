@@ -1,7 +1,7 @@
 import sys
 import logging
 from utils.phase_io import Phase
-from utils.secret_referencing import resolve_all_secrets
+from utils.secret_referencing import resolve_all_secrets, build_secrets_dict
 
 # Configure logging
 logging.basicConfig(level=logging.ERROR)
@@ -16,7 +16,11 @@ def phase_secrets_fetch(phase_service_token=None, phase_service_host=None, env_n
 
     try:
         all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
-        resolved_secrets = []
+
+        # Build secrets dictionary once outside the loop
+        secrets_dict = build_secrets_dict(all_secrets)
+
+        all_secrets_dict = {}
         for secret in all_secrets:
             try:
                 # Ensure we use the correct environment name for each secret
@@ -24,18 +28,13 @@ def phase_secrets_fetch(phase_service_token=None, phase_service_host=None, env_n
                 current_application_name = secret['application']
 
                 # Attempt to resolve secret references in the value
-                resolved_value = resolve_all_secrets(value=secret["value"], all_secrets=all_secrets, current_application_name=current_application_name, current_env_name=current_env_name, phase=phase)
-                resolved_secrets.append({
-                    **secret,
-                    "value": resolved_value  # Replace original value with resolved value
-                })
+                resolved_value = resolve_all_secrets(value=secret["value"], all_secrets=all_secrets, current_application_name=current_application_name, current_env_name=current_env_name, phase=phase, secrets_dict=secrets_dict)
+
+                all_secrets_dict[secret["key"]] = resolved_value
 
             except ValueError as e:
                 logger.error(f"Failed to fetch secrets: {e}")
                 sys.exit(1)
-
-        # Create a dictionary with keys and resolved values outside the loop
-        all_secrets_dict = {secret["key"]: secret["value"] for secret in resolved_secrets}
 
     except Exception as e:
         logger.error(f"Failed to fetch secrets: {e}")
