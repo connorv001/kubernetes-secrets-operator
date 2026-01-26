@@ -16,9 +16,23 @@ spec:
         app: migration
     spec:
       restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
       containers:
       - name: migration
         image: postgres:15.4-alpine3.17
+        imagePullPolicy: {{ .Values.app.migrations.image.pullPolicy }}
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          {{- toYaml .Values.app.migrations.resources | nindent 10 }}
         env:
         - name: OLD_DB_HOST
           value: {{ .Values.migration.oldServiceHost | quote }}
@@ -28,26 +42,28 @@ spec:
           value: {{ .Values.database.user | quote }}
         - name: DATABASE_NAME
           value: {{ .Values.database.name | quote }}
+        - name: MIGRATION_DRY_RUN
+          value: {{ .Values.migration.dryRun | default false | quote }}
         volumeMounts:
         - name: db-pass
           mountPath: /etc/secrets/db-pass
           readOnly: true
+        - name: tmp
+          mountPath: /tmp
         command: ["/bin/sh", "-c"]
         args:
           - |
             set -e
-            set -o pipefail
 
-            # Securely set up .pgpass
+            # Securely set up credentials inside the script
+            # This prevents PGPASSWORD from appearing in 'kubectl describe pod' or 'env' of the main process if inspecting via /proc
             echo "Setting up DB credentials..."
-            export PGPASS_FILE=$HOME/.pgpass
-            touch $PGPASS_FILE
-            chmod 0600 $PGPASS_FILE
-            DB_PASS=$(cat /etc/secrets/db-pass/DATABASE_PASSWORD)
-            # Format: hostname:port:database:username:password
-            echo "*:*:*:$DATABASE_USER:$DB_PASS" > $PGPASS_FILE
+            export PGPASSWORD=$(cat /etc/secrets/db-pass/DATABASE_PASSWORD | tr -d '\n')
 
             echo "Starting migration..."
+            if [ "$MIGRATION_DRY_RUN" = "true" ]; then
+              echo "DRY RUN MODE ENABLED: No changes will be made."
+            fi
 
             echo "Waiting for New DB ($NEW_DB_HOST) to be ready..."
             until pg_isready -h $NEW_DB_HOST -U $DATABASE_USER; do 
@@ -67,10 +83,49 @@ spec:
             OLD_COUNT=$(echo $OLD_COUNT | xargs) # trim whitespace
             echo "Old DB Table Count: $OLD_COUNT"
 
+            if [ "$MIGRATION_DRY_RUN" = "true" ]; then
+              echo "DRY RUN: Skipping data dump/restore."
+              echo "DRY RUN: Would execute: pg_dump -h $OLD_DB_HOST ... | psql -h $NEW_DB_HOST ..."
+              echo "Migration dry run successful."
+              exit 0
+            fi
+
             echo "Dumping data from $OLD_DB_HOST to $NEW_DB_HOST..."
             
-            # Perform migration with pipefail enabled, ON_ERROR_STOP, and single transaction for atomicity
-            pg_dump -h $OLD_DB_HOST -U $DATABASE_USER $DATABASE_NAME | psql -v ON_ERROR_STOP=1 --single-transaction -h $NEW_DB_HOST -U $DATABASE_USER $DATABASE_NAME
+            # Use FIFO to reliably capture exit codes from both pg_dump and psql without requiring 'pipefail'
+            FIFO_PATH=/tmp/migration_pipe
+            rm -f $FIFO_PATH
+            mkfifo $FIFO_PATH
+
+            # Background psql reading from pipe
+            # We use a subshell to capture the exit code
+            (
+              set +e
+              psql -v ON_ERROR_STOP=1 --single-transaction -h $NEW_DB_HOST -U $DATABASE_USER $DATABASE_NAME < $FIFO_PATH
+              echo $? > /tmp/psql_rc
+            ) &
+            PSQL_PID=$!
+
+            # Run pg_dump writing to pipe
+            set +e
+            pg_dump -h $OLD_DB_HOST -U $DATABASE_USER $DATABASE_NAME > $FIFO_PATH
+            DUMP_RC=$?
+            set -e
+
+            # Wait for psql to finish
+            wait $PSQL_PID
+            PSQL_RC=$(cat /tmp/psql_rc)
+
+            # Check both exit codes
+            if [ $DUMP_RC -ne 0 ]; then
+              echo "ERROR: pg_dump failed with exit code $DUMP_RC"
+              exit 1
+            fi
+
+            if [ $PSQL_RC -ne 0 ]; then
+              echo "ERROR: psql failed with exit code $PSQL_RC"
+              exit 1
+            fi
             
             echo "Migration command finished. Verifying..."
 
@@ -90,4 +145,6 @@ spec:
       - name: db-pass
         secret:
           secretName: {{ .Values.migration.oldSecretName | default .Values.phaseSecrets }}
+      - name: tmp
+        emptyDir: {}
 {{- end -}}

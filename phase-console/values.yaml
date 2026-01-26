@@ -35,7 +35,9 @@ migration:
   oldServiceHost: "phase-postgres"
   # The name of the secret containing credentials for the old database.
   # Usually this is the same as the current phaseSecrets.
-  oldSecretName: "" 
+  oldSecretName: ""
+  # Run migration in dry-run mode (no data changes, just connection/schema checks)
+  dryRun: false
 
 # Postgres Subchart Configuration (Bitnami)
 postgresql:
@@ -135,11 +137,17 @@ app:
 
   migrations:
     image:
+      # If not specified, defaults to "postgres:15.4-alpine3.17" in template
+      repository: postgres
+      tag: 15.4-alpine3.17
       pullPolicy: IfNotPresent
     resources:
       requests:
         cpu: 125m
         memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
 
 database:
   external: false
