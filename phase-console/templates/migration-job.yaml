@@ -24,20 +24,28 @@ spec:
           value: {{ .Values.migration.oldServiceHost | quote }}
         - name: NEW_DB_HOST
           value: {{ include "phase.fullname" . }}-postgresql
-        - name: PGPASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.migration.oldSecretName | default .Values.phaseSecrets }}
-              key: DATABASE_PASSWORD
         - name: DATABASE_USER
           value: {{ .Values.database.user | quote }}
         - name: DATABASE_NAME
           value: {{ .Values.database.name | quote }}
+        volumeMounts:
+        - name: db-pass
+          mountPath: /etc/secrets/db-pass
+          readOnly: true
         command: ["/bin/sh", "-c"]
         args:
           - |
             set -e
             set -o pipefail
+
+            # Securely set up .pgpass
+            echo "Setting up DB credentials..."
+            export PGPASS_FILE=$HOME/.pgpass
+            touch $PGPASS_FILE
+            chmod 0600 $PGPASS_FILE
+            DB_PASS=$(cat /etc/secrets/db-pass/DATABASE_PASSWORD)
+            # Format: hostname:port:database:username:password
+            echo "*:*:*:$DATABASE_USER:$DB_PASS" > $PGPASS_FILE
 
             echo "Starting migration..."
 
@@ -61,8 +69,8 @@ spec:
 
             echo "Dumping data from $OLD_DB_HOST to $NEW_DB_HOST..."
             
-            # Perform migration with pipefail enabled and ON_ERROR_STOP
-            pg_dump -h $OLD_DB_HOST -U $DATABASE_USER $DATABASE_NAME | psql -v ON_ERROR_STOP=1 -h $NEW_DB_HOST -U $DATABASE_USER $DATABASE_NAME
+            # Perform migration with pipefail enabled, ON_ERROR_STOP, and single transaction for atomicity
+            pg_dump -h $OLD_DB_HOST -U $DATABASE_USER $DATABASE_NAME | psql -v ON_ERROR_STOP=1 --single-transaction -h $NEW_DB_HOST -U $DATABASE_USER $DATABASE_NAME
             
             echo "Migration command finished. Verifying..."
 
@@ -78,4 +86,8 @@ spec:
             fi
 
             echo "Migration successful. Verification passed."
+      volumes:
+      - name: db-pass
+        secret:
+          secretName: {{ .Values.migration.oldSecretName | default .Values.phaseSecrets }}
 {{- end -}}
