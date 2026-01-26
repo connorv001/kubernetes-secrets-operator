@@ -8,7 +8,7 @@
       - The PostgreSQL subchart is DISABLED (so this is the primary DB).
       - OR The migration mode is ENABLED (so we need this Old DB running to migrate data from it).
 */ -}}
-{{- if and (not .Values.migration.freshInstall) (not .Values.database.external) (not .Values.global.external.enabled) (or (not .Values.postgresql.enabled) .Values.migration.enabled) }}
+{{- if eq (include "phase.deployLegacyPostgres" .) "true" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

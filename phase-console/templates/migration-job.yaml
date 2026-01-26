@@ -36,7 +36,11 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
           - |
+            set -e
+            set -o pipefail
+
             echo "Starting migration..."
+
             echo "Waiting for New DB ($NEW_DB_HOST) to be ready..."
             until pg_isready -h $NEW_DB_HOST -U $DATABASE_USER; do 
               echo "Waiting for new DB..."
@@ -49,17 +53,29 @@ spec:
               sleep 2
             done
 
-            echo "Dumping data from $OLD_DB_HOST..."
-            # We ignore errors on drop database because it might not exist or we might not have permission, 
-            # but we want to ensure we overwrite/fill the new DB.
-            # Actually, standard pg_dump | psql is better.
+            echo "Pre-flight check: Verifying table counts..."
+            # Get table count from old DB
+            OLD_COUNT=$(psql -h $OLD_DB_HOST -U $DATABASE_USER -d $DATABASE_NAME -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';")
+            OLD_COUNT=$(echo $OLD_COUNT | xargs) # trim whitespace
+            echo "Old DB Table Count: $OLD_COUNT"
+
+            echo "Dumping data from $OLD_DB_HOST to $NEW_DB_HOST..."
             
-            pg_dump -h $OLD_DB_HOST -U $DATABASE_USER $DATABASE_NAME | psql -h $NEW_DB_HOST -U $DATABASE_USER $DATABASE_NAME
+            # Perform migration with pipefail enabled and ON_ERROR_STOP
+            pg_dump -h $OLD_DB_HOST -U $DATABASE_USER $DATABASE_NAME | psql -v ON_ERROR_STOP=1 -h $NEW_DB_HOST -U $DATABASE_USER $DATABASE_NAME
             
-            if [ $? -eq 0 ]; then
-              echo "Migration successful."
-            else
-              echo "Migration failed."
+            echo "Migration command finished. Verifying..."
+
+            # Get table count from new DB
+            NEW_COUNT=$(psql -h $NEW_DB_HOST -U $DATABASE_USER -d $DATABASE_NAME -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';")
+            NEW_COUNT=$(echo $NEW_COUNT | xargs) # trim whitespace
+            echo "New DB Table Count: $NEW_COUNT"
+
+            if [ "$OLD_COUNT" != "$NEW_COUNT" ]; then
+              echo "ERROR: Migration verification failed! Table counts do not match."
+              echo "Old: $OLD_COUNT, New: $NEW_COUNT"
               exit 1
             fi
+
+            echo "Migration successful. Verification passed."
 {{- end -}}
