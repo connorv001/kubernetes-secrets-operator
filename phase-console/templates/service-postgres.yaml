@@ -1,4 +1,4 @@
-{{- if and (not .Values.database.external) (not .Values.migration.freshInstall) }}
+{{- if eq (include "phase.deployLegacyPostgres" .) "true" }}
 apiVersion: v1
 kind: Service
 metadata:
