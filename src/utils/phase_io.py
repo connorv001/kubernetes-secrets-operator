@@ -228,7 +228,7 @@ class Phase:
         return results
 
 
-    def update(self, env_name: str, key: str, value: str, app_name: str = None, source_path: str = '/', destination_path: str = None) -> str:
+    def update(self, env_name: str, key: str, value: str, app_name: str = None, source_path: str = '/', destination_path: str = None, tags: List[str] = None, comment: str = None) -> str:
         """
         Update a secret in Phase KMS based on key and environment, with support for source and destination paths.
         
@@ -239,6 +239,8 @@ class Phase:
             app_name (str, optional): The name of the desired application.
             source_path (str, optional): The current path of the secret. Defaults to root path '/'.
             destination_path (str, optional): The new path for the secret, if changing its location. If not provided, the path is not updated.
+            tags (List[str], optional): The tags to associate with the secret.
+            comment (str, optional): The comment to associate with the secret.
                 
         Returns:
             str: A message indicating the outcome of the update operation.
@@ -275,13 +277,17 @@ class Phase:
         decrypted_salt = self.decrypt(wrapped_salt, user_data)
         key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
 
+        encrypted_comment = None
+        if comment is not None:
+            encrypted_comment = CryptoUtils.encrypt_asymmetric(comment, public_key)
+
         secret_update_payload = {
             "id": matching_secret["id"],
             "key": encrypted_key,
             "keyDigest": key_digest,
             "value": encrypted_value,
-            "tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
-            "comment": matching_secret.get("comment", "")
+            "tags": tags if tags is not None else matching_secret.get("tags", []),
+            "comment": encrypted_comment if encrypted_comment is not None else matching_secret.get("comment", "")
         }
 
         # Update the path in the payload if a destination path is provided
