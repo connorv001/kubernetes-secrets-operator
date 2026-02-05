@@ -139,7 +139,30 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
     return f"${{{original_ref}}}"
 
 
-def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'Phase', current_application_name: str, current_env_name: str) -> str:
+def build_secrets_dict(all_secrets: List[Dict[str, str]]) -> Dict[str, Dict[str, Dict[str, str]]]:
+    """
+    Constructs a dictionary from a list of secrets for efficient lookup.
+
+    Args:
+        all_secrets (List[Dict[str, str]]): A list of secret dictionaries.
+
+    Returns:
+        Dict: A nested dictionary structure {env_name: {path: {key: value}}}.
+    """
+    secrets_dict = {}
+    for secret in all_secrets:
+        env_name = secret['environment']
+        path = secret['path']
+        key = secret['key']
+        if env_name not in secrets_dict:
+            secrets_dict[env_name] = {}
+        if path not in secrets_dict[env_name]:
+            secrets_dict[env_name][path] = {}
+        secrets_dict[env_name][path][key] = secret['value']
+    return secrets_dict
+
+
+def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'Phase', current_application_name: str, current_env_name: str, secrets_dict: Dict = None) -> str:
     """
     Resolves all secret references within a given string to their actual values.
     
@@ -153,21 +176,14 @@ def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'P
         phase ('Phase'): An instance of the Phase class to fetch secrets.
         current_application_name (str): The name of the current application.
         current_env_name (str): The current environment name for resolving local references.
+        secrets_dict (Dict, optional): Pre-built dictionary of secrets for efficient lookup. Defaults to None.
         
     Returns:
         str: The input string with all secret references resolved to their actual values.
     """
 
-    secrets_dict = {}
-    for secret in all_secrets:
-        env_name = secret['environment']
-        path = secret['path']
-        key = secret['key']
-        if env_name not in secrets_dict:
-            secrets_dict[env_name] = {}
-        if path not in secrets_dict[env_name]:
-            secrets_dict[env_name][path] = {}
-        secrets_dict[env_name][path][key] = secret['value']
+    if secrets_dict is None:
+        secrets_dict = build_secrets_dict(all_secrets)
     
     refs = SECRET_REF_REGEX.findall(value)
     resolved_value = value
