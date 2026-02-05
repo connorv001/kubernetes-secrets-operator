@@ -78,26 +78,18 @@ def split_path_and_key(ref: str) -> tuple:
     return path, key_name
 
 
-def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[str, str]]], phase: 'Phase', current_application_name: str, current_env_name: str) -> str:
+def parse_secret_reference(ref: str, current_application_name: str, current_env_name: str) -> tuple:
     """
-    Resolves a single secret reference to its actual value by fetching it from the specified environment.
-    
-    The function supports local, cross-environment, and cross-application secret references, allowing for flexible secret management.
-    Local references are identified by the absence of a dot '.' in the reference string, implying the current environment.
-    Cross-environment references include an environment name, separated by a dot from the rest of the path.
-    Cross-application references use '::' to separate the application name from the rest of the reference.
+    Parses a secret reference string into application, environment, path, and key components.
     
     Args:
-        ref (str): The secret reference string, which could be a local, cross-environment, or cross-application reference.
-        secrets_dict (Dict[str, Dict[str, Dict[str, str]]]): A dictionary containing known secrets.
-        phase ('Phase'): An instance of the Phase class to fetch secrets.
+        ref (str): The secret reference string.
         current_application_name (str): The name of the current application.
-        current_env_name (str): The current environment name, used for resolving local references.
+        current_env_name (str): The current environment name.
         
     Returns:
-        str: The resolved secret value or the original reference if not resolved.
+        tuple: A tuple containing (app_name, env_name, path, key_name).
     """
-    original_ref = ref  # Store the original reference
     app_name = current_application_name 
     env_name = current_env_name
     path = "/"  # Default root path
@@ -115,6 +107,31 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
         path, key_name = split_path_and_key(rest)
     else:  # Local reference
         path, key_name = split_path_and_key(ref)
+
+    return app_name, env_name, path, key_name
+
+
+def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[str, str]]], phase: 'Phase', current_application_name: str, current_env_name: str) -> str:
+    """
+    Resolves a single secret reference to its actual value by fetching it from the specified environment.
+
+    The function supports local, cross-environment, and cross-application secret references, allowing for flexible secret management.
+    Local references are identified by the absence of a dot '.' in the reference string, implying the current environment.
+    Cross-environment references include an environment name, separated by a dot from the rest of the path.
+    Cross-application references use '::' to separate the application name from the rest of the reference.
+
+    Args:
+        ref (str): The secret reference string, which could be a local, cross-environment, or cross-application reference.
+        secrets_dict (Dict[str, Dict[str, Dict[str, str]]]): A dictionary containing known secrets.
+        phase ('Phase'): An instance of the Phase class to fetch secrets.
+        current_application_name (str): The name of the current application.
+        current_env_name (str): The current environment name, used for resolving local references.
+
+    Returns:
+        str: The resolved secret value or the original reference if not resolved.
+    """
+    original_ref = ref
+    app_name, env_name, path, key_name = parse_secret_reference(ref, current_application_name, current_env_name)
 
     try:
         # Lookup with environment, path, and key
@@ -170,6 +187,42 @@ def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'P
         secrets_dict[env_name][path][key] = secret['value']
     
     refs = SECRET_REF_REGEX.findall(value)
+
+    # Identify missing secrets to batch fetch
+    missing_secrets = {} # (app_name, env_name, path) -> set(keys)
+
+    for ref in refs:
+        app_name, env_name, path, key_name = parse_secret_reference(ref, current_application_name, current_env_name)
+
+        is_known = False
+        if env_name in secrets_dict:
+            if path in secrets_dict[env_name] and key_name in secrets_dict[env_name][path]:
+                is_known = True
+
+        if not is_known:
+            group_key = (app_name, env_name, path)
+            if group_key not in missing_secrets:
+                missing_secrets[group_key] = set()
+            missing_secrets[group_key].add(key_name)
+
+    # Batch fetch missing secrets
+    for (app_name, env_name, path), keys in missing_secrets.items():
+        try:
+            fetched = phase.get(env_name=env_name, app_name=app_name, keys=list(keys), path=path)
+            for secret in fetched:
+                f_env = secret.get("environment", env_name) # Ensure we have env name
+                f_path = secret.get("path", path)
+                f_key = secret["key"]
+                f_value = secret["value"]
+
+                if f_env not in secrets_dict:
+                    secrets_dict[f_env] = {}
+                if f_path not in secrets_dict[f_env]:
+                    secrets_dict[f_env][f_path] = {}
+                secrets_dict[f_env][f_path][f_key] = f_value
+        except EnvironmentNotFoundException:
+            pass
+
     resolved_value = value
     # Resolve each found reference and replace it with resolved_secret_value.
     for ref in refs:
